@@ -78,6 +78,11 @@ async function attachUploads(article) {
   return article;
 }
 
+async function refreshSeo(reason) {
+  const { error } = await supabase.functions.invoke("news-seo-dispatch", { body: { reason } });
+  if (error) throw new Error(error.message || "Unable to start the SEO refresh.");
+}
+
 async function saveArticle(forcePublished = null) {
   try {
     setMessage("Saving…");
@@ -93,7 +98,13 @@ async function saveArticle(forcePublished = null) {
     const { data, error } = await supabase.from("news_articles").upsert(payload).select().single();
     if (error) throw error;
     await loadArticles(data.id);
-    setMessage(article.is_published ? "Article published." : "Draft saved.");
+    const savedMessage = article.is_published ? "Article published." : "Draft saved.";
+    try {
+      await refreshSeo("article-saved");
+      setMessage(`${savedMessage} Sitemap refresh started.`);
+    } catch (seoError) {
+      setMessage(`${savedMessage} SEO refresh could not start: ${seoError.message}`, true);
+    }
   } catch (error) { setMessage(error.message, true); }
 }
 
@@ -106,36 +117,53 @@ async function loadArticles(selectId = currentId) {
 }
 
 async function loadSettings() {
-  const { data } = await supabase.from("news_settings").select("*").eq("id", true).maybeSingle();
+  const { data, error } = await supabase.from("news_settings").select("*").eq("id", true).maybeSingle();
+  if (error) throw error;
   const settings = normalizeSettings(data || DEFAULT_SETTINGS);
   Object.entries(settings).forEach(([name, value]) => { const input = document.getElementById("settings-form").elements.namedItem(name); if (input) input.value = value; });
 }
 
 async function enterAdmin(user) {
   if (!isAdmin(user)) { await supabase.auth.signOut(); document.getElementById("login-message").textContent = "This Google account is not authorized."; return; }
-  document.getElementById("login-panel").hidden = true;
-  document.getElementById("admin-app").hidden = false;
-  document.getElementById("sign-out").hidden = false;
-  document.getElementById("account-label").textContent = user.email;
-  await Promise.all([loadArticles(), loadSettings()]);
+  const loginMessage = document.getElementById("login-message");
+  loginMessage.textContent = "Opening the newsroom…";
+  try {
+    await Promise.all([loadArticles(), loadSettings()]);
+    document.getElementById("login-panel").hidden = true;
+    document.getElementById("admin-app").hidden = false;
+    document.getElementById("sign-out").hidden = false;
+    document.getElementById("refresh-seo").hidden = false;
+    document.getElementById("account-label").textContent = user.email;
+  } catch (error) {
+    loginMessage.textContent = `Unable to open the newsroom: ${error.message}`;
+    loginMessage.classList.add("error");
+  }
 }
 
-document.getElementById("google-login").addEventListener("click", () => savedAdminUser ? enterAdmin(savedAdminUser) : supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.href, queryParams: { prompt: "select_account" } } }));
+document.getElementById("google-login").addEventListener("click", async () => {
+  if (savedAdminUser) return enterAdmin(savedAdminUser);
+  const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.href, queryParams: { prompt: "select_account" } } });
+  if (error) document.getElementById("login-message").textContent = `Unable to start Google sign-in: ${error.message}`;
+});
 document.getElementById("sign-out").addEventListener("click", async () => { await supabase.auth.signOut(); location.reload(); });
+document.getElementById("refresh-seo").addEventListener("click", async () => {
+  try { await refreshSeo("manual-refresh"); setMessage("Sitemap refresh started."); }
+  catch (error) { setMessage(`SEO refresh could not start: ${error.message}`, true); }
+});
 document.getElementById("new-article").addEventListener("click", () => fillForm(normalizeArticle()));
 list.addEventListener("click", (event) => { const button = event.target.closest("[data-id]"); if (button) fillForm(articles.find((article) => article.id === button.dataset.id)); });
 field("title").addEventListener("input", () => { if (!currentId || !field("slug").value) field("slug").value = createSlug(field("title").value); });
 document.getElementById("save-draft").addEventListener("click", () => saveArticle(false));
 document.getElementById("publish-article").addEventListener("click", () => saveArticle(true));
 document.getElementById("duplicate-article").addEventListener("click", () => { const article = articleFromForm(); article.id = null; article.title += " Copy"; article.slug = createSlug(article.title); article.is_published = false; article.is_featured = false; fillForm(article); });
-document.getElementById("delete-article").addEventListener("click", async () => { if (!currentId || !confirm("Delete this article permanently?")) return; const { error } = await supabase.from("news_articles").delete().eq("id", currentId); if (error) return setMessage(error.message, true); currentId = null; await loadArticles(); fillForm(normalizeArticle()); });
+document.getElementById("delete-article").addEventListener("click", async () => { if (!currentId || !confirm("Delete this article permanently?")) return; const { error } = await supabase.from("news_articles").delete().eq("id", currentId); if (error) return setMessage(error.message, true); currentId = null; await loadArticles(); fillForm(normalizeArticle()); try { await refreshSeo("article-deleted"); setMessage("Article deleted. Sitemap refresh started."); } catch (seoError) { setMessage(`Article deleted. SEO refresh could not start: ${seoError.message}`, true); } });
 document.getElementById("settings-form").addEventListener("submit", async (event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); const { error } = await supabase.from("news_settings").upsert({ id: true, ...values }); setMessage(error ? error.message : "Publication settings saved.", Boolean(error)); });
 
 const { data: { session } } = await supabase.auth.getSession();
-if (session?.user) { savedAdminUser = session.user; document.getElementById("login-message").textContent = `Signed in as ${session.user.email}. Continue to open the newsroom.`; }
+if (session?.user) { savedAdminUser = session.user; await enterAdmin(session.user); }
 supabase.auth.onAuthStateChange((event, nextSession) => {
   if (event === "SIGNED_IN" && nextSession?.user) {
     savedAdminUser = nextSession.user;
-    enterAdmin(nextSession.user);
+    setTimeout(() => enterAdmin(nextSession.user), 0);
   }
 });

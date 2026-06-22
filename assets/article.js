@@ -21,30 +21,44 @@ function galleryMarkup(gallery) {
 }
 
 function updateMetadata(article) {
-  const title = article.seo_title || `${article.title} | SHIPS News`;
+  const title = `${article.seo_title || article.title} | SHIPS News`;
   const description = article.seo_description || article.dek;
   const url = `https://news.theshipsshop.com/article.html?slug=${encodeURIComponent(article.slug)}`;
   document.title = title;
   document.getElementById("meta-description").content = description;
   document.getElementById("canonical-link").href = url;
+  document.getElementById("robots-meta").content = "index,follow";
   document.getElementById("og-title").content = title;
   document.getElementById("og-description").content = description;
+  document.getElementById("og-url").content = url;
   document.getElementById("og-image").content = article.hero_image_url;
+  document.getElementById("twitter-card").content = article.hero_image_url ? "summary_large_image" : "summary";
+  document.getElementById("twitter-title").content = title;
+  document.getElementById("twitter-description").content = description;
+  document.getElementById("twitter-image").content = article.hero_image_url;
   const schema = document.createElement("script");
   schema.type = "application/ld+json";
   schema.textContent = JSON.stringify({ "@context": "https://schema.org", "@type": "NewsArticle", headline: article.title, description, image: article.hero_image_url ? [article.hero_image_url] : [], datePublished: article.published_at, dateModified: article.updated_at || article.published_at, author: { "@type": "Organization", name: article.author }, publisher: { "@type": "Organization", name: "SHIPS News" }, mainEntityOfPage: url });
   document.head.appendChild(schema);
 }
 
+function markUnavailableForSearch() {
+  document.getElementById("robots-meta").content = "noindex,nofollow";
+  document.getElementById("canonical-link").href = location.href;
+  document.getElementById("og-url").content = location.href;
+}
+
 async function loadArticle() {
   const slug = new URLSearchParams(location.search).get("slug");
   const page = document.getElementById("article-page");
   if (!slug) {
+    markUnavailableForSearch();
     page.innerHTML = `<div class="empty-news"><h1>Story not found.</h1><a class="read-link" href="index.html">Return to the newsroom</a></div>`;
     return;
   }
   const { data, error } = await supabase.from("public_news_articles").select("*").eq("slug", slug).maybeSingle();
   if (error || !data) {
+    markUnavailableForSearch();
     page.innerHTML = `<div class="empty-news"><span class="overline">Story unavailable</span><h1>This story is not published.</h1><a class="read-link" href="index.html">Return to the newsroom</a></div>`;
     return;
   }
