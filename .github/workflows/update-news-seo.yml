@@ -1,0 +1,41 @@
+name: Update News SEO Files
+
+on:
+  repository_dispatch:
+    types: [news-content-changed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: news-seo-generation
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the news site
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate sitemap and crawlable article index
+        run: node scripts/news-seo-generator.mjs
+
+      - name: Commit updated discovery files
+        run: |
+          if git diff --quiet -- sitemap.xml articles.html; then
+            echo "SEO discovery files are already current."
+            exit 0
+          fi
+          git config user.name "ships-news-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add sitemap.xml articles.html
+          git commit -m "chore: refresh news sitemap"
+          git push
+
